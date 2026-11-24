@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sound Speedway v11 — On-device Speech Test</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:16px;background:linear-gradient(135deg,#d3eeff,#fff2c6);font-family:system-ui,-apple-system,sans-serif;color:#253858}
+main{max-width:760px;margin:auto}h1{font-size:clamp(28px,5vw,42px);margin:4px 0}h2{font-size:19px;margin:0 0 10px}.eyebrow{font-size:12px;font-weight:900;letter-spacing:1px;color:#3563a2}
+.card{background:white;border-radius:20px;padding:18px;margin:12px 0;box-shadow:0 4px 0 #bed6e9}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+button{border:0;border-radius:14px;min-height:48px;padding:10px 15px;font-size:16px;font-weight:800;cursor:pointer;background:#e5effe;color:#224776;touch-action:manipulation}
+button.primary{background:#266ddc;color:white}button.warn{background:#ffd65c;color:#58400c}button:disabled{opacity:.42;cursor:not-allowed}
+label{font-size:14px;font-weight:800;display:block}select{display:block;width:100%;padding:12px;border:2px solid #afc6df;border-radius:12px;background:white;font-size:16px;margin-top:5px}
+.status{background:#edf5fd;padding:13px;border-radius:12px;min-height:50px;font-weight:750;white-space:pre-wrap;line-height:1.45}.ok{background:#dff7e8}.error{background:#fff0ed}
+pre{max-height:310px;overflow:auto;background:#edf4fb;border-radius:12px;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.5}
+.number{font-size:42px;font-weight:900;color:#1e5db3}.tiny{font-size:12px;color:#5d7089;line-height:1.5}
+.meter{height:16px;background:#dce7f2;border-radius:12px;overflow:hidden}.meter div{height:100%;width:0;background:linear-gradient(90deg,#31b66d,#efbe37);transition:width .08s}
+@media(max-width:510px){.grid{grid-template-columns:1fr}button{width:100%}}
+</style></head><body><main>
+<div class="eyebrow">🏎️ SUPER SOUND SPEEDWAY · V11 DIAGNOSTICS</div><h1>🎙️ On-device speech test</h1>
+<p>We are checking whether the browser can recognise “sun” locally, rather than using the online speech service that returned network errors. The racing game is unchanged.</p>
+<section class="card"><h2>1. Check device support</h2>
+<div class="grid"><div><label for="lang">Recognition language</label><select id="lang"><option value="en-AU">English (Australia)</option><option value="en-US">English (United States)</option><option value="en-GB">English (United Kingdom)</option></select></div>
+<div><label for="word">Target word</label><select id="word"><option>sun</option><option>sock</option><option>soup</option><option>seal</option><option>soap</option></select></div></div>
+<p><button id="check" class="primary">Check on-device support</button></p>
+<div class="status" id="support" role="status">Not checked yet.</div>
+<p><button id="install" class="warn" disabled>Install local language pack</button></p>
+<p class="tiny">If Australian English is unavailable, select US or UK English and check again. Installing may download language data to the device; permission may be required. If the browser does not support these APIs, this test reports that rather than using online recognition silently.</p>
+</section>
+<section class="card"><h2>2. Say “sun” ten times</h2><div class="grid"><button id="start" class="primary">🎙️ Start local listening</button><button id="stop" disabled>⏹ Stop listening</button></div>
+<p id="state" class="status" role="status">Check support first.</p>
+<div class="grid"><div><div class="tiny">Recognised target words</div><div class="number" id="count">0</div></div><div><div class="tiny">Recognition attempts started</div><div class="number" id="requests">0</div></div></div>
+<p><strong>Latest transcript</strong></p><div id="heard" class="status">Nothing heard yet.</div>
+<p class="tiny">Say each word separately, with a brief pause. The browser may still end sessions and require another start. Only final transcripts count; partial text is displayed for troubleshooting.</p>
+</section>
+<section class="card"><h2>3. Microphone check</h2><div class="grid"><button id="mic">🎤 Test microphone</button><button id="micstop">Stop microphone test</button></div><p class="status" id="micstatus">Not tested.</p><div class="meter"><div id="level"></div></div></section>
+<section class="card"><h2>4. Copy results</h2><button id="copy">Copy test report</button><button id="clear">Clear results</button><pre id="log"></pre><p class="tiny">This page does not record or upload audio. In local mode, recognition is requested on-device; the microphone level test remains local. No remote recognition fallback is used. If the local API is absent, listening is disabled.</p></section>
+</main><script>
+(()=>{
+"use strict";
+const $=x=>document.getElementById(x);
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let available=false,checkedLang="",isListening=false,rec=null,session=0,count=0,requests=0,seen=new Set(),restart=null,micStream=null,context=null,frame=null;
+const lines=[];
+const log=(type,msg)=>{lines.push(new Date().toLocaleTimeString("en-AU",{hour12:false})+" ["+type+"] "+msg);$("log").textContent=lines.join("\n")};
+const status=(msg,type="")=>{$("state").textContent=msg;$("state").className="status "+type};
+const setSupport=(msg,type="")=>{$("support").textContent=msg;$("support").className="status "+type};
+const opts=()=>({langs:[$("lang").value],processLocally:true});
+const hasLocal=()=>!!SR&&typeof SR.available==="function"&&typeof SR.install==="function"&&("processLocally" in SR.prototype);
+function buttons(){$("start").disabled=!available||isListening;$("stop").disabled=!isListening}
+async function check(){
+ stop();available=false;checkedLang="";$("install").disabled=true;buttons();
+ const lang=$("lang").value;setSupport("Checking "+lang+" support…");log("check","Browser="+navigator.userAgent+"; secure="+isSecureContext+"; lang="+lang+"; localAPI="+hasLocal());
+ if(!hasLocal()){setSupport("This browser does not expose the complete on-device SpeechRecognition API. No remote fallback will be used. Try an up-to-date desktop Chrome/Edge.", "error");status("Local speech recognition unsupported.","error");return}
+ try{
+ const a=await SR.available(opts());log("availability",lang+" = "+a);
+ if(a==="available"){available=true;checkedLang=lang;setSupport("✅ "+lang+" local recognition pack available.","ok");status("Ready — press Start local listening.");}
+ else if(a==="downloadable"||a==="downloading"){$("install").disabled=false;setSupport(lang+" pack: "+a+". Press Install local language pack.");status("Install the language pack first.");}
+ else setSupport(lang+" on-device recognition unavailable here. Try another language or browser.","error");
+ }catch(e){setSupport("Availability check failed: "+e.name+": "+e.message,"error");log("error",e.name+": "+e.message)}
+ buttons();
+}
+async function install(){
+ if(!hasLocal())return;
+ $("install").disabled=true;setSupport("Requesting local language pack installation…");
+ try{
+ const result=await SR.install(opts());
+ log("install",$("lang").value+" result="+result);
+ setSupport(result?"Installation succeeded. Press Check on-device support again.":"Installation unavailable or declined.",""+(result?"ok":"error"));
+ }catch(e){setSupport("Installation failed: "+e.name+": "+e.message,"error");log("install-error",e.name+": "+e.message)}
+}
+function stop(){
+ isListening=false;session++;clearTimeout(restart);restart=null;
+ let old=rec;rec=null;if(old){old.onend=old.onerror=old.onresult=old.onstart=null;try{old.abort()}catch(e){}}
+ buttons();
+}
+function normalize(s){return String(s||"").toLowerCase().match(/[a-z]+/g)||[]}
+function launch(token){
+ if(!isListening||token!==session)return;
+ try{
+ const r=new SR();
+ if(!("processLocally" in r))throw Error("Local mode property missing");
+ r.processLocally=true;r.lang=checkedLang;r.continuous=true;r.interimResults=true;r.maxAlternatives=3;
+ rec=r;requests++;seen=new Set();$("requests").textContent=requests;
+ log("start","Request "+requests+", processLocally=true, "+checkedLang);
+ r.onstart=()=>{if(token!==session||rec!==r)return;status("🔴 Local recognition active. Say “"+$("word").value+"”.","ok");log("ready","Browser signalled recognition start")};
+ r.onresult=e=>{
+  if(token!==session||rec!==r)return;
+  const partial=[];
+  for(let i=e.resultIndex;i<e.results.length;i++){
+   const res=e.results[i],text=res?.[0]?.transcript?.trim()||"";
+   if(!res.isFinal){if(text)partial.push(text);continue}
+   if(seen.has(i))continue;seen.add(i);
+   $("heard").textContent="Final: "+text;
+   const matched=normalize(text).filter(w=>w===$("word").value.toLowerCase()).length;
+   count+=matched;$("count").textContent=count;
+   log("final",JSON.stringify(text)+"; matched="+matched+"; cumulative="+count);
+  }
+  if(partial.length)$("heard").textContent="Hearing: "+partial.join(" | ");
+ };
+ r.onerror=e=>{if(token!==session||rec!==r)return;log("speech-error",e.error||"unknown");status("⚠️ Recognition error: "+(e.error||"unknown"),"error")};
+ r.onend=()=>{
+  if(token!==session||rec!==r)return;
+  rec=null;log("end","Local session ended");
+  if(!isListening)return;
+  status("Listening paused; trying automatic local restart…");
+  restart=setTimeout(()=>{restart=null;launch(token)},850);
+ };
+ r.start();
+ }catch(e){log("start-error",e.name+": "+e.message);status("Local recognition could not start: "+e.message,"error");stop()}
+}
+function start(){
+ if(!available||checkedLang!==$("lang").value){status("Check and install the selected language first.","error");return}
+ stop();isListening=true;const token=++session;buttons();log("session","Start local "+checkedLang+" target="+$("word").value);launch(token)
+}
+async function mic(){
+ stopMic();$("micstatus").textContent="Requesting microphone permission…";
+ try{
+ micStream=await navigator.mediaDevices.getUserMedia({audio:true});
+ $("micstatus").textContent="✅ Microphone access works: "+(micStream.getAudioTracks()[0]?.label||"audio device");
+ const AC=window.AudioContext||window.webkitAudioContext;
+ if(!AC)return;
+ context=new AC();await context.resume();
+ const source=context.createMediaStreamSource(micStream), analyser=context.createAnalyser();analyser.fftSize=2048;source.connect(analyser);
+ const data=new Uint8Array(analyser.fftSize);
+ function draw(){if(!micStream)return;analyser.getByteTimeDomainData(data);let v=0;for(let i=0;i<data.length;i++){const x=(data[i]-128)/128;v+=x*x}const rms=Math.sqrt(v/data.length);$("level").style.width=Math.min(100,Math.max(1,rms*1000))+"%";frame=requestAnimationFrame(draw)}draw();
+ log("mic","Permission granted");
+ }catch(e){$("micstatus").textContent="Microphone failed: "+e.name+": "+e.message;log("mic-error",e.name+": "+e.message)}
+}
+function stopMic(){
+ if(frame!==null){cancelAnimationFrame(frame);frame=null}
+ if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null}
+ if(context){context.close().catch(()=>{});context=null}
+ $("level").style.width="0";
+}
+$("check").addEventListener("click",check);
+$("install").addEventListener("click",install);
+$("start").addEventListener("click",start);
+$("stop").addEventListener("click",()=>{stop();status("Stopped by user.");log("stop","User stopped")});
+$("mic").addEventListener("click",mic);$("micstop").addEventListener("click",stopMic);
+$("lang").addEventListener("change",()=>{stop();available=false;checkedLang="";buttons();setSupport("Language changed. Check support again.")});
+$("word").addEventListener("change",()=>log("target","Changed to "+$("word").value));
+$("clear").addEventListener("click",()=>{count=0;requests=0;$("count").textContent="0";$("requests").textContent="0";lines.length=0;$("log").textContent="";$("heard").textContent="Nothing heard yet."});
+$("copy").addEventListener("click",async()=>{const text="Sound Speedway V11 Local Speech Test\n"+navigator.userAgent+"\n"+lines.join("\n");try{await navigator.clipboard.writeText(text);$("copy").textContent="✅ Copied"}catch(e){const t=document.createElement("textarea");t.value=text;document.body.appendChild(t);t.select();document.execCommand("copy");t.remove();$("copy").textContent="Copied (fallback)"}setTimeout(()=>$("copy").textContent="Copy test report",1700)});
+window.addEventListener("pagehide",()=>{stop();stopMic()});
+log("environment","secure="+isSecureContext+"; speech="+!!SR+"; localAPI="+hasLocal());
+if(!hasLocal())setSupport("Local recognition API not detected; please try an up-to-date desktop browser.","error");
+buttons();
+})();
+</script></body></html>
